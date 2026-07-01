@@ -113,14 +113,15 @@ def format_alert(flight: dict) -> str:
     departure = flight["departure_at"][:10]
     return_date = flight["return_at"][:10]
     link = build_booking_link(flight)
-    return (
-        "✈️ Найден дешёвый авиабилет Алматы → Нячанг\n"
-        f"Вылет: {departure}, обратно: {return_date}\n"
-        f"Цена: {price:,.0f} {CURRENCY} на человека (дешевле лимита на {diff:,.0f} {CURRENCY})\n"
-        f"На {PASSENGERS} взрослых: ~{price * PASSENGERS:,.0f} {CURRENCY}\n"
-        "⚠️ Цена может быть без учёта багажа — уточни на сайте перед покупкой\n"
-        f"Ссылка: {link}"
-    )
+    lines = [
+        "✈️ Найден авиабилет Алматы → Нячанг дешевле лимита",
+        f"📅 Вылет {departure} → обратно {return_date}",
+        f"💵 За человека: {price:,.0f} {CURRENCY} (дешевле лимита на {diff:,.0f} {CURRENCY})",
+        f"💵 На {PASSENGERS} взрослых: ~{price * PASSENGERS:,.0f} {CURRENCY}",
+        "⚠️ Цена может быть без учёта багажа — уточни на сайте перед покупкой",
+        f"🔗 {link}",
+    ]
+    return "\n".join(lines)
 
 
 def main() -> int:

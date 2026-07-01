@@ -145,7 +145,7 @@ def format_alert(tour: dict, solo_price: int | None) -> str:
         lines.append("💵 За одного: не удалось найти отдельную цену, уточни на сайте")
     lines.append(f"🔗 {link}")
 
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def main() -> int:

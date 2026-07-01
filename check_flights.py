@@ -121,7 +121,7 @@ def format_alert(flight: dict) -> str:
         "⚠️ Цена может быть без учёта багажа — уточни на сайте перед покупкой",
         f"🔗 {link}",
     ]
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def main() -> int:

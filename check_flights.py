@@ -124,6 +124,44 @@ def format_alert(flight: dict) -> str:
     return "\n\n".join(lines)
 
 
+def gather_matching_flights(token: str) -> list:
+    candidates = fetch_month_matrix(token)
+    matching = [f for f in candidates if matches_window(f)]
+    print(f"[check_flights] month-matrix returned {len(candidates)} flights, {len(matching)} within our date window")
+
+    if not matching:
+        matching = fetch_exact_date_pairs(token)
+        print(f"[check_flights] fallback query found {len(matching)} flights within our date window")
+
+    return matching
+
+
+def format_digest_entry(rank: int, flight: dict) -> str:
+    departure = flight["departure_at"][:10]
+    return_date = flight["return_at"][:10]
+    price = flight["price"]
+    return (
+        f"{rank}. 📅 {departure} → {return_date}\n"
+        f"💵 {price:,.0f} {CURRENCY}/чел | На {PASSENGERS} взрослых: ~{price * PASSENGERS:,.0f} {CURRENCY}\n"
+        f"🔗 {build_booking_link(flight)}"
+    )
+
+
+def list_top_flights(n: int = 5) -> str:
+    token = os.environ.get("TRAVELPAYOUTS_TOKEN")
+    if not token:
+        return "✈️ Авиабилеты Aviasales: TRAVELPAYOUTS_TOKEN не настроен, проверка недоступна."
+
+    matching = gather_matching_flights(token)
+    if not matching:
+        return "✈️ Авиабилеты Aviasales: ничего не найдено в текущем окне дат."
+
+    top = sorted(matching, key=lambda f: f["price"])[:n]
+    entries = [format_digest_entry(i, f) for i, f in enumerate(top, start=1)]
+    header = f"✈️ Авиабилеты Aviasales — топ {len(top)} (1-15 августа, 6-7 дней)"
+    return header + "\n\n" + "\n\n".join(entries)
+
+
 def main() -> int:
     token = os.environ.get("TRAVELPAYOUTS_TOKEN")
     if not token:
@@ -131,13 +169,7 @@ def main() -> int:
         return 0
 
     try:
-        candidates = fetch_month_matrix(token)
-        matching = [f for f in candidates if matches_window(f)]
-        print(f"[check_flights] month-matrix returned {len(candidates)} flights, {len(matching)} within our date window")
-
-        if not matching:
-            matching = fetch_exact_date_pairs(token)
-            print(f"[check_flights] fallback query found {len(matching)} flights within our date window")
+        matching = gather_matching_flights(token)
 
         if not matching:
             print("[check_flights] no flights found in the target date window at all")

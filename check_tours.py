@@ -116,6 +116,61 @@ def find_solo_price(tour: dict) -> int | None:
     return None
 
 
+def gather_matching_tours() -> list:
+    all_matching = []
+    day = DEPARTURE_WINDOW_START
+    while day <= DEPARTURE_WINDOW_END:
+        tours = fetch_tours_for_date(day)
+        matching = [
+            t for t in tours
+            if matches_duration(t) and matches_stars(t) and t.get("tourist", {}).get("adults") == 2
+        ]
+        all_matching.extend(matching)
+        print(
+            f"[check_tours] {day}: {len(tours)} tours returned, {len(matching)} match "
+            f"{DAYS_MIN}-{DAYS_MAX} days and {STARS_MIN}+ stars"
+        )
+        day += dt.timedelta(days=1)
+        time.sleep(REQUEST_DELAY_SECONDS)
+    return all_matching
+
+
+def format_digest_entry(rank: int, tour: dict, solo_price: int | None) -> str:
+    hotel = tour["hotel"]["realName"]
+    stars = hotel_stars(tour) or 0
+    nights = tour["nights"]
+    depart = tour["departDay"]
+    ret = tour["returnDay"]
+    price = tour["price"]["forTour"]
+    solo_line = f"{solo_price:,.0f} тг" if solo_price is not None else "не найдено"
+    return (
+        f"{rank}. 🏨 {hotel}\n"
+        f"⭐ {'⭐' * (stars - 1)} ({stars} звезды) | 🌙 {nights} ночей\n"
+        f"📅 {depart} → {ret}\n"
+        f"💵 Двое: {price:,.0f} тг | Рифат: {solo_line}\n"
+        f"🔗 {build_link(tour)}"
+    )
+
+
+def list_top_tours(n: int = 5) -> str:
+    all_matching = gather_matching_tours()
+    if not all_matching:
+        return "🌴 Туры HT.KZ: ничего не найдено в текущем окне дат."
+
+    top = sorted(all_matching, key=lambda t: t["price"]["forTour"])[:n]
+    entries = []
+    for i, tour in enumerate(top, start=1):
+        try:
+            solo_price = find_solo_price(tour)
+        except Exception as exc:
+            print(f"[check_tours] failed to fetch solo price for digest entry {i}: {exc}")
+            solo_price = None
+        entries.append(format_digest_entry(i, tour, solo_price))
+
+    header = f"🌴 Туры HT.KZ — топ {len(top)} (от {STARS_MIN}★, {DAYS_MIN}-{DAYS_MAX} дней, 1-15 августа)"
+    return header + "\n\n" + "\n\n".join(entries)
+
+
 def format_alert(tour: dict, solo_price: int | None) -> str:
     price = tour["price"]["forTour"]
     hotel = tour["hotel"]["realName"]
@@ -149,25 +204,8 @@ def format_alert(tour: dict, solo_price: int | None) -> str:
 
 
 def main() -> int:
-    all_matching = []
-    checked_days = 0
-    day = DEPARTURE_WINDOW_START
-
     try:
-        while day <= DEPARTURE_WINDOW_END:
-            tours = fetch_tours_for_date(day)
-            checked_days += 1
-            matching = [
-                t for t in tours
-                if matches_duration(t) and matches_stars(t) and t.get("tourist", {}).get("adults") == 2
-            ]
-            all_matching.extend(matching)
-            print(
-                f"[check_tours] {day}: {len(tours)} tours returned, {len(matching)} match "
-                f"{DAYS_MIN}-{DAYS_MAX} days and {STARS_MIN}+ stars"
-            )
-            day += dt.timedelta(days=1)
-            time.sleep(REQUEST_DELAY_SECONDS)
+        all_matching = gather_matching_tours()
 
         if not all_matching:
             print("[check_tours] no matching tours found in the target window at all")
@@ -193,7 +231,7 @@ def main() -> int:
         return 0
 
     except Exception as exc:
-        print(f"[check_tours] error during tour check (checked {checked_days} days before failing): {exc}")
+        print(f"[check_tours] error during tour check: {exc}")
         if should_send_error_alert("tours"):
             send_message(f"⚠️ Мониторинг туров ht.kz сломался: {exc}")
         return 0

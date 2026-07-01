@@ -100,8 +100,8 @@ def parse_route_prices(section: str, route_label: str) -> dict[dt.date, int]:
     return prices
 
 
-def find_best_roundtrip(posts: list[tuple[str, str]]):
-    best = None
+def find_all_roundtrips(posts: list[tuple[str, str]]) -> list:
+    candidates = []
     for post_id, text in posts:
         section = extract_vietnam_section(text)
         if not section:
@@ -114,16 +114,40 @@ def find_best_roundtrip(posts: list[tuple[str, str]]):
             for duration in TRIP_DURATIONS:
                 ret_date = dep_date + dt.timedelta(days=duration)
                 if ret_date in inbound:
-                    total = dep_price + inbound[ret_date]
-                    candidate = {
+                    candidates.append({
                         "post_id": post_id,
                         "depart": dep_date,
                         "return": ret_date,
-                        "price_per_person": total,
-                    }
-                    if best is None or total < best["price_per_person"]:
-                        best = candidate
-    return best
+                        "price_per_person": dep_price + inbound[ret_date],
+                    })
+    return candidates
+
+
+def find_best_roundtrip(posts: list[tuple[str, str]]):
+    candidates = find_all_roundtrips(posts)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: c["price_per_person"])
+
+
+def format_digest_entry(rank: int, deal: dict) -> str:
+    return (
+        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()}\n"
+        f"💵 {deal['price_per_person']:,.0f} тг/чел\n"
+        f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}"
+    )
+
+
+def list_top_telegram(n: int = 5) -> str:
+    posts = fetch_posts()
+    candidates = find_all_roundtrips(posts)
+    if not candidates:
+        return f"📢 Канал HT.KZ: подходящих комбинаций билетов не найдено (просканировано {len(posts)} постов)."
+
+    top = sorted(candidates, key=lambda c: c["price_per_person"])[:n]
+    entries = [format_digest_entry(i, c) for i, c in enumerate(top, start=1)]
+    header = f"📢 Канал HT.KZ — топ {len(top)} комбинаций билетов (1-15 августа, 6-7 дней)"
+    return header + "\n\n" + "\n\n".join(entries)
 
 
 def format_alert(deal: dict) -> str:

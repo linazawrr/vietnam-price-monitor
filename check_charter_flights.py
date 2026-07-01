@@ -92,28 +92,50 @@ def format_alert(deal: dict) -> str:
     return "\n\n".join(lines)
 
 
-def main() -> int:
+def gather_all_deals() -> list:
     all_deals = []
-    checked_days = 0
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context(**p.devices["iPhone 13"])
+        page = context.new_page()
 
+        day = DEPARTURE_WINDOW_START
+        while day <= DEPARTURE_WINDOW_END:
+            return_day = day + dt.timedelta(days=TRIP_DURATION_DAYS)
+            itineraries = search_one_date(page, day)
+            print(f"[check_charter_flights] {day}: {len(itineraries)} itineraries found")
+            for it in itineraries:
+                all_deals.append(format_itinerary(day, return_day, it))
+            day += dt.timedelta(days=1)
+
+        context.close()
+        browser.close()
+    return all_deals
+
+
+def format_digest_entry(rank: int, deal: dict) -> str:
+    baggage = f"{deal['baggage_kg']} кг" if deal["baggage_kg"] else "не указан"
+    return (
+        f"{rank}. 🛫 {deal['airline']}\n"
+        f"📅 {deal['depart']} → {deal['return']}\n"
+        f"💵 {deal['price_per_person']:,.0f} тг/чел | На {PASSENGERS}: {deal['total_price']:,.0f} тг | 🧳 {baggage}"
+    )
+
+
+def list_top_charter(n: int = 5) -> str:
+    all_deals = gather_all_deals()
+    if not all_deals:
+        return "✈️ Чартеры HT.KZ: ничего не найдено в текущем окне дат."
+
+    top = sorted(all_deals, key=lambda d: d["price_per_person"])[:n]
+    entries = [format_digest_entry(i, d) for i, d in enumerate(top, start=1)]
+    header = f"✈️ Чартерные билеты HT.KZ — топ {len(top)} (7 ночей, 1-15 августа)"
+    return header + "\n\n" + "\n\n".join(entries)
+
+
+def main() -> int:
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            context = browser.new_context(**p.devices["iPhone 13"])
-            page = context.new_page()
-
-            day = DEPARTURE_WINDOW_START
-            while day <= DEPARTURE_WINDOW_END:
-                return_day = day + dt.timedelta(days=TRIP_DURATION_DAYS)
-                itineraries = search_one_date(page, day)
-                checked_days += 1
-                print(f"[check_charter_flights] {day}: {len(itineraries)} itineraries found")
-                for it in itineraries:
-                    all_deals.append(format_itinerary(day, return_day, it))
-                day += dt.timedelta(days=1)
-
-            context.close()
-            browser.close()
+        all_deals = gather_all_deals()
 
         if not all_deals:
             print("[check_charter_flights] no charter itineraries found in the target window at all")
@@ -136,7 +158,7 @@ def main() -> int:
         return 0
 
     except Exception as exc:
-        print(f"[check_charter_flights] error during check (checked {checked_days} days before failing): {exc}")
+        print(f"[check_charter_flights] error during check: {exc}")
         if should_send_error_alert("charter_flights"):
             send_message(f"⚠️ Мониторинг чартерных билетов ht.kz сломался: {exc}")
         return 0

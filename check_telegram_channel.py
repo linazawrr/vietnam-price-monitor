@@ -11,8 +11,10 @@ from telegram_alert import send_message, should_send_error_alert
 # ht.kz's own Telegram channel (public, no login needed - readable via the t.me/s/<channel> web
 # preview) regularly posts one-way fare roundups tagged with a country flag per section, e.g. a
 # "🇻🇳 Вьетнам" block listing "Алматы — Нячанг" / "Нячанг — Алматы" one-way prices with dates.
-# These are one-way prices for 1 adult, so we pair up an outbound + return date ourselves to get
-# a comparable round-trip total.
+# Occasionally it also posts an already-combined round trip line, e.g.
+# "Алматы — Нячанг — Алматы  17 апреля — 24 апреля — 216 000 ₸" - a single real fare, which we
+# prefer over self-pairing two one-way legs. "Камрань" (Cam Ranh airport) is used interchangeably
+# with "Нячанг" (Nha Trang) for this route - same CXR airport, just a different resort-area name.
 CHANNEL = "HT_kz"
 CHANNEL_URL = f"https://t.me/s/{CHANNEL}"
 POSTS_TO_SCAN = 40  # how far back to page through channel history each run
@@ -25,12 +27,22 @@ DEPARTURE_WINDOW_END = dt.date(YEAR, 8, 15)
 TRIP_DURATIONS = (6, 7)
 PRICE_THRESHOLD_PER_PERSON = 320_000
 
+DESTINATION_NAMES = ("Нячанг", "Камрань")
+DEST_ALT = "|".join(DESTINATION_NAMES)
+
 MONTHS = {
     "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
     "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
+MONTH_ALT = "|".join(MONTHS)
 
-DATE_PRICE_RE = re.compile(r"(\d{1,2})\s+(" + "|".join(MONTHS) + r")\s*[—-]\s*([\d\s]{4,})\s*₸")
+DATE_PRICE_RE = re.compile(rf"(\d{{1,2}})\s+({MONTH_ALT})\s*[—-]\s*([\d\s]{{4,}})\s*₸")
+ROUNDTRIP_LINE_RE = re.compile(
+    rf"(\d{{1,2}})\s+({MONTH_ALT})\s*[—-]\s*(\d{{1,2}})\s+({MONTH_ALT})\s*[—-]\s*([\d\s]{{4,}})\s*₸"
+)
+ROUNDTRIP_HEADER_RE = re.compile(rf"Алматы\s*[—-]\s*(?:{DEST_ALT})\s*[—-]\s*Алматы")
+OUTBOUND_HEADER_RE = re.compile(rf"Алматы\s*[—-]\s*(?:{DEST_ALT})(?!\s*[—-]\s*Алматы)")
+INBOUND_HEADER_RE = re.compile(rf"(?:{DEST_ALT})\s*[—-]\s*Алматы")
 
 
 def fetch_posts() -> list[tuple[str, str]]:
@@ -69,7 +81,7 @@ def fetch_posts() -> list[tuple[str, str]]:
 
 
 def extract_vietnam_section(text: str) -> str | None:
-    if "Вьетнам" not in text or "Нячанг" not in text:
+    if "Вьетнам" not in text or not any(name in text for name in DESTINATION_NAMES):
         return None
     idx = text.find("Вьетнам")
     rest = text[idx:]
@@ -77,12 +89,20 @@ def extract_vietnam_section(text: str) -> str | None:
     return rest[:end] if end != -1 else rest
 
 
-def parse_route_prices(section: str, route_label: str) -> dict[dt.date, int]:
-    """route_label e.g. 'Алматы — Нячанг' or 'Нячанг — Алматы'."""
-    idx = section.find(route_label)
-    if idx == -1:
+def _parse_date(day_str: str, month_str: str) -> dt.date | None:
+    try:
+        return dt.date(YEAR, MONTHS[month_str], int(day_str))
+    except ValueError:
+        return None
+
+
+def parse_route_prices(section: str, direction: str) -> dict[dt.date, int]:
+    """direction: 'outbound' (Алматы -> Нячанг/Камрань) or 'inbound' (Нячанг/Камрань -> Алматы)."""
+    header_re = OUTBOUND_HEADER_RE if direction == "outbound" else INBOUND_HEADER_RE
+    m = header_re.search(section)
+    if not m:
         return {}
-    chunk = section[idx + len(route_label):]
+    chunk = section[m.end():]
     # stop at the next route header (another "X — Y" line) if present
     next_route = re.search(r"[А-Яа-яё]+\s*[—-]\s*[А-Яа-яё]+", chunk)
     if next_route:
@@ -90,14 +110,31 @@ def parse_route_prices(section: str, route_label: str) -> dict[dt.date, int]:
 
     prices = {}
     for day_str, month_str, price_str in DATE_PRICE_RE.findall(chunk):
-        month = MONTHS[month_str]
-        try:
-            date = dt.date(YEAR, month, int(day_str))
-        except ValueError:
+        date = _parse_date(day_str, month_str)
+        if date is None:
             continue
-        price = int(price_str.replace(" ", ""))
-        prices[date] = price
+        prices[date] = int(price_str.replace(" ", ""))
     return prices
+
+
+def parse_roundtrip_combos(section: str) -> list[dict]:
+    """Already-combined round-trip lines, e.g. 'Алматы — Нячанг — Алматы  17 апреля — 24 апреля — 216 000 ₸'."""
+    m = ROUNDTRIP_HEADER_RE.search(section)
+    if not m:
+        return []
+    chunk = section[m.end():]
+    next_route = re.search(r"[А-Яа-яё]+\s*[—-]\s*[А-Яа-яё]+", chunk)
+    if next_route:
+        chunk = chunk[:next_route.start()]
+
+    combos = []
+    for day1, month1, day2, month2, price_str in ROUNDTRIP_LINE_RE.findall(chunk):
+        dep_date = _parse_date(day1, month1)
+        ret_date = _parse_date(day2, month2)
+        if dep_date is None or ret_date is None:
+            continue
+        combos.append({"depart": dep_date, "return": ret_date, "price": int(price_str.replace(" ", ""))})
+    return combos
 
 
 def find_all_roundtrips(posts: list[tuple[str, str]]) -> list:
@@ -106,8 +143,23 @@ def find_all_roundtrips(posts: list[tuple[str, str]]) -> list:
         section = extract_vietnam_section(text)
         if not section:
             continue
-        outbound = parse_route_prices(section, "Алматы — Нячанг")
-        inbound = parse_route_prices(section, "Нячанг — Алматы")
+
+        for combo in parse_roundtrip_combos(section):
+            dep_date, ret_date = combo["depart"], combo["return"]
+            if not (DEPARTURE_WINDOW_START <= dep_date <= DEPARTURE_WINDOW_END):
+                continue
+            if (ret_date - dep_date).days not in TRIP_DURATIONS:
+                continue
+            candidates.append({
+                "post_id": post_id,
+                "depart": dep_date,
+                "return": ret_date,
+                "price_per_person": combo["price"],
+                "source": "combined",
+            })
+
+        outbound = parse_route_prices(section, "outbound")
+        inbound = parse_route_prices(section, "inbound")
         for dep_date, dep_price in outbound.items():
             if not (DEPARTURE_WINDOW_START <= dep_date <= DEPARTURE_WINDOW_END):
                 continue
@@ -119,6 +171,7 @@ def find_all_roundtrips(posts: list[tuple[str, str]]) -> list:
                         "depart": dep_date,
                         "return": ret_date,
                         "price_per_person": dep_price + inbound[ret_date],
+                        "source": "paired",
                     })
     return candidates
 
@@ -131,8 +184,9 @@ def find_best_roundtrip(posts: list[tuple[str, str]]):
 
 
 def format_digest_entry(rank: int, deal: dict) -> str:
+    tag = "туда-обратно" if deal["source"] == "combined" else "комбинация из 2 билетов"
     return (
-        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()}\n"
+        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()} ({tag})\n"
         f"💵 {deal['price_per_person']:,.0f} тг/чел\n"
         f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}"
     )
@@ -157,9 +211,12 @@ def format_alert(deal: dict) -> str:
         f"📅 Вылет {deal['depart'].isoformat()} → обратно {deal['return'].isoformat()}",
         f"💵 За человека: {deal['price_per_person']:,.0f} тг (дешевле лимита на {diff:,.0f} тг)",
         "🧳 По собственному описанию канала: багаж и питание включены",
-        "ℹ️ Это комбинация двух билетов в одну сторону из одного поста, не единый билет туда-обратно — уточни стыковку у менеджера",
-        f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}",
     ]
+    if deal["source"] == "combined":
+        lines.append("ℹ️ Это единый тариф туда-обратно, как указан в посте")
+    else:
+        lines.append("ℹ️ Это комбинация двух билетов в одну сторону из одного поста, не единый билет туда-обратно — уточни стыковку у менеджера")
+    lines.append(f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}")
     return "\n\n".join(lines)
 
 

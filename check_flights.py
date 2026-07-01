@@ -24,7 +24,7 @@ SEARCH_MONTH = "2026-08"
 def _call_api(token: str, params: dict) -> dict:
     query = urllib.parse.urlencode(params)
     url = f"{API_URL}?{query}"
-    req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
+    req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=20) as resp:
         body = resp.read()
         return json.loads(body)

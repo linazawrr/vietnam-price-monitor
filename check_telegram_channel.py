@@ -24,8 +24,15 @@ REQUEST_TIMEOUT = 15
 YEAR = 2026
 DEPARTURE_WINDOW_START = dt.date(YEAR, 8, 1)
 DEPARTURE_WINDOW_END = dt.date(YEAR, 8, 15)
-TRIP_DURATIONS = (6, 7)
-PRICE_THRESHOLD_PER_PERSON = 320_000
+TRIP_DURATIONS = (5, 6)
+PASSENGERS = 3
+PRICE_THRESHOLD_PER_PERSON = 330_000  # reference only - the actual gate is the rounded total below
+PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 330k = 990k
+
+
+def is_ideal_return_date(return_date: dt.date) -> bool:
+    """Weekend arrival back in Almaty (Saturday/Sunday) - a nice-to-have, not a filter."""
+    return return_date.weekday() >= 5
 
 DESTINATION_NAMES = ("Нячанг", "Камрань")
 DEST_ALT = "|".join(DESTINATION_NAMES)
@@ -185,9 +192,11 @@ def find_best_roundtrip(posts: list[tuple[str, str]]):
 
 def format_digest_entry(rank: int, deal: dict) -> str:
     tag = "туда-обратно" if deal["source"] == "combined" else "комбинация из 2 билетов"
+    ideal = " 🎯" if is_ideal_return_date(deal["return"]) else ""
+    total = deal["price_per_person"] * PASSENGERS
     return (
-        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()} ({tag})\n"
-        f"💵 {deal['price_per_person']:,.0f} тг/чел\n"
+        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()} ({tag}){ideal}\n"
+        f"💵 {deal['price_per_person']:,.0f} тг/чел | На {PASSENGERS}: {total:,.0f} тг\n"
         f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}"
     )
 
@@ -200,22 +209,26 @@ def list_top_telegram(n: int = 5) -> str:
 
     top = sorted(candidates, key=lambda c: c["price_per_person"])[:n]
     entries = [format_digest_entry(i, c) for i, c in enumerate(top, start=1)]
-    header = f"📢 Канал HT.KZ — топ {len(top)} комбинаций билетов (1-15 августа, 6-7 дней)"
+    header = f"📢 Канал HT.KZ — топ {len(top)} комбинаций билетов (1-15 августа, 5-6 дней, 🎯 = выходной прилёт)"
     return header + "\n\n" + "\n\n".join(entries)
 
 
 def format_alert(deal: dict) -> str:
-    diff = PRICE_THRESHOLD_PER_PERSON - deal["price_per_person"]
+    total = deal["price_per_person"] * PASSENGERS
+    diff = PRICE_THRESHOLD_TOTAL - total
     lines = [
         "✈️ Найден авиабилет (Telegram-канал HT.KZ) дешевле лимита",
         f"📅 Вылет {deal['depart'].isoformat()} → обратно {deal['return'].isoformat()}",
-        f"💵 За человека: {deal['price_per_person']:,.0f} тг (дешевле лимита на {diff:,.0f} тг)",
+        f"💵 За человека: {deal['price_per_person']:,.0f} тг",
+        f"💵 На {PASSENGERS} человек: {total:,.0f} тг (дешевле лимита на {diff:,.0f} тг)",
         "🧳 По собственному описанию канала: багаж и питание включены",
     ]
     if deal["source"] == "combined":
         lines.append("ℹ️ Это единый тариф туда-обратно, как указан в посте")
     else:
         lines.append("ℹ️ Это комбинация двух билетов в одну сторону из одного поста, не единый билет туда-обратно — уточни стыковку у менеджера")
+    if is_ideal_return_date(deal["return"]):
+        lines.append("🎯 Идеальные даты — прилёт в Алматы в выходной")
     lines.append(f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}")
     return "\n\n".join(lines)
 
@@ -230,17 +243,18 @@ def main() -> int:
             print("[check_telegram_channel] no matching Vietnam round-trip combo found in scanned posts")
             return 0
 
+        total = best["price_per_person"] * PASSENGERS
         print(
-            f"[check_telegram_channel] cheapest combo: {best['price_per_person']:,.0f} KZT/person, "
-            f"depart {best['depart']}, return {best['return']} (post {best['post_id']})"
+            f"[check_telegram_channel] cheapest combo: {best['price_per_person']:,.0f} KZT/person "
+            f"({total:,.0f} for {PASSENGERS}), depart {best['depart']}, return {best['return']} (post {best['post_id']})"
         )
 
-        if best["price_per_person"] <= PRICE_THRESHOLD_PER_PERSON:
+        if total <= PRICE_THRESHOLD_TOTAL:
             send_message(format_alert(best))
         else:
             print(
-                f"[check_telegram_channel] cheapest combo {best['price_per_person']:,.0f} KZT/person "
-                f"is above threshold {PRICE_THRESHOLD_PER_PERSON}, no alert"
+                f"[check_telegram_channel] cheapest total {total:,.0f} KZT "
+                f"is above threshold {PRICE_THRESHOLD_TOTAL}, no alert"
             )
         return 0
 

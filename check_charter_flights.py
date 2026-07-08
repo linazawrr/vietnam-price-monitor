@@ -11,24 +11,30 @@ from telegram_alert import send_message, should_send_error_alert
 # search API (Bronix) that requires an API key baked into ht.kz's own frontend bundle; rather than
 # lifting that key and calling Bronix directly ourselves, we drive the actual ht.kz page and read
 # whatever it fetches - the same access pattern a real visitor gets.
+PASSENGERS = 3
 SEARCH_URL_TEMPLATE = (
     "https://ht.kz/new/search/avia?departure=ALA&destination=CXR&dateFrom={dep}&dateTo={ret}"
-    "&adults=2&children=0&childAges=&flyType=&from=aviaForm"
+    f"&adults={PASSENGERS}&children=0&childAges=&flyType=&from=aviaForm"
 )
 
 DEPARTURE_WINDOW_START = dt.date(2026, 8, 1)
 DEPARTURE_WINDOW_END = dt.date(2026, 8, 15)
-TRIP_DURATION_DAYS = 7  # only checking 7-day trips to keep the browser-driven search fast
+TRIP_DURATIONS = (5, 6)
 
-PASSENGERS = 2
-PRICE_THRESHOLD_PER_PERSON = 320_000
+PRICE_THRESHOLD_PER_PERSON = 330_000  # reference only - the actual gate is the rounded total below
+PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 330k = 990k
 
 POLL_TIMEOUT_SECONDS = 30
 POLL_INTERVAL_SECONDS = 2
 
 
-def search_one_date(page, day: dt.date) -> list:
-    return_day = day + dt.timedelta(days=TRIP_DURATION_DAYS)
+def is_ideal_return_date(return_date: dt.date) -> bool:
+    """Weekend arrival back in Almaty (Saturday/Sunday) - a nice-to-have, not a filter."""
+    return return_date.weekday() >= 5
+
+
+def search_one_date(page, day: dt.date, duration: int) -> list:
+    return_day = day + dt.timedelta(days=duration)
     url = SEARCH_URL_TEMPLATE.format(dep=day.isoformat(), ret=return_day.isoformat())
 
     captured = {}
@@ -78,17 +84,23 @@ def format_itinerary(day: dt.date, return_day: dt.date, itinerary: dict) -> dict
 
 
 def format_alert(deal: dict) -> str:
-    diff = PRICE_THRESHOLD_PER_PERSON - deal["price_per_person"]
+    diff = PRICE_THRESHOLD_TOTAL - deal["total_price"]
     baggage = f"{deal['baggage_kg']} кг багажа включено" if deal["baggage_kg"] else "багаж не указан"
+    return_date = dt.date.fromisoformat(deal["return"])
     lines = [
         "✈️ Найден чартерный билет ht.kz Алматы → Нячанг дешевле лимита",
         f"🛫 {deal['airline']}",
         f"📅 Вылет {deal['depart']} → обратно {deal['return']}",
-        f"💵 За человека: {deal['price_per_person']:,.0f} тг (дешевле лимита на {diff:,.0f} тг)",
-        f"💵 На {PASSENGERS} взрослых: {deal['total_price']:,.0f} тг",
+        f"💵 За человека: {deal['price_per_person']:,.0f} тг",
+        f"💵 На {PASSENGERS} человек: {deal['total_price']:,.0f} тг (дешевле лимита на {diff:,.0f} тг)",
         f"🧳 {baggage}",
-        f"🔗 https://ht.kz/new/search/avia?departure=ALA&destination=CXR&dateFrom={deal['depart']}&dateTo={deal['return']}&adults=2&children=0&childAges=&flyType=&from=aviaForm",
     ]
+    if is_ideal_return_date(return_date):
+        lines.append("🎯 Идеальные даты — прилёт в Алматы в выходной")
+    lines.append(
+        f"🔗 https://ht.kz/new/search/avia?departure=ALA&destination=CXR&dateFrom={deal['depart']}"
+        f"&dateTo={deal['return']}&adults={PASSENGERS}&children=0&childAges=&flyType=&from=aviaForm"
+    )
     return "\n\n".join(lines)
 
 
@@ -101,11 +113,12 @@ def gather_all_deals() -> list:
 
         day = DEPARTURE_WINDOW_START
         while day <= DEPARTURE_WINDOW_END:
-            return_day = day + dt.timedelta(days=TRIP_DURATION_DAYS)
-            itineraries = search_one_date(page, day)
-            print(f"[check_charter_flights] {day}: {len(itineraries)} itineraries found")
-            for it in itineraries:
-                all_deals.append(format_itinerary(day, return_day, it))
+            for duration in TRIP_DURATIONS:
+                return_day = day + dt.timedelta(days=duration)
+                itineraries = search_one_date(page, day, duration)
+                print(f"[check_charter_flights] {day} (+{duration}d): {len(itineraries)} itineraries found")
+                for it in itineraries:
+                    all_deals.append(format_itinerary(day, return_day, it))
             day += dt.timedelta(days=1)
 
         context.close()
@@ -115,9 +128,10 @@ def gather_all_deals() -> list:
 
 def format_digest_entry(rank: int, deal: dict) -> str:
     baggage = f"{deal['baggage_kg']} кг" if deal["baggage_kg"] else "не указан"
+    ideal = " 🎯" if is_ideal_return_date(dt.date.fromisoformat(deal["return"])) else ""
     return (
         f"{rank}. 🛫 {deal['airline']}\n"
-        f"📅 {deal['depart']} → {deal['return']}\n"
+        f"📅 {deal['depart']} → {deal['return']}{ideal}\n"
         f"💵 {deal['price_per_person']:,.0f} тг/чел | На {PASSENGERS}: {deal['total_price']:,.0f} тг | 🧳 {baggage}"
     )
 
@@ -129,7 +143,7 @@ def list_top_charter(n: int = 5) -> str:
 
     top = sorted(all_deals, key=lambda d: d["price_per_person"])[:n]
     entries = [format_digest_entry(i, d) for i, d in enumerate(top, start=1)]
-    header = f"✈️ Чартерные билеты HT.KZ — топ {len(top)} (7 ночей, 1-15 августа)"
+    header = f"✈️ Чартерные билеты HT.KZ — топ {len(top)} (5-6 дней, 1-15 августа, 🎯 = выходной прилёт)"
     return header + "\n\n" + "\n\n".join(entries)
 
 
@@ -144,15 +158,15 @@ def main() -> int:
         best = min(all_deals, key=lambda d: d["price_per_person"])
         print(
             f"[check_charter_flights] cheapest found: {best['price_per_person']:,.0f} KZT/person, "
-            f"{best['airline']}, depart {best['depart']}"
+            f"{best['total_price']:,.0f} for {PASSENGERS}, {best['airline']}, depart {best['depart']}"
         )
 
-        if best["price_per_person"] <= PRICE_THRESHOLD_PER_PERSON:
+        if best["total_price"] <= PRICE_THRESHOLD_TOTAL:
             send_message(format_alert(best))
         else:
             print(
-                f"[check_charter_flights] cheapest price {best['price_per_person']:,.0f} KZT/person "
-                f"is above threshold {PRICE_THRESHOLD_PER_PERSON}, no alert"
+                f"[check_charter_flights] cheapest total {best['total_price']:,.0f} KZT "
+                f"is above threshold {PRICE_THRESHOLD_TOTAL}, no alert"
             )
 
         return 0

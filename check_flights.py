@@ -13,12 +13,18 @@ DESTINATION = "CXR"  # Cam Ranh airport, serves Nha Trang
 CURRENCY = "KZT"
 DEPARTURE_WINDOW_START = dt.date(2026, 8, 1)
 DEPARTURE_WINDOW_END = dt.date(2026, 8, 15)
-TRIP_DURATIONS = (6, 7)
-PRICE_THRESHOLD_PER_PERSON = 320_000
-PASSENGERS = 2
+TRIP_DURATIONS = (5, 6)
+PASSENGERS = 3
+PRICE_THRESHOLD_PER_PERSON = 330_000  # reference only - the actual gate is the rounded total below
+PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 330k = 990k
 
 API_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
 SEARCH_MONTH = "2026-08"
+
+
+def is_ideal_return_date(return_date: dt.date) -> bool:
+    """Weekend arrival back in Almaty (Saturday/Sunday) - a nice-to-have, not a filter."""
+    return return_date.weekday() >= 5
 
 
 def _call_api(token: str, params: dict) -> dict:
@@ -98,29 +104,33 @@ def matches_window(flight: dict) -> bool:
 
 
 def build_booking_link(flight: dict) -> str:
-    link = flight.get("link")
-    if link:
-        return f"https://www.aviasales.com{link}"
+    # Aviasales' own cached "link" is generated for 1 passenger and can't be changed to
+    # PASSENGERS after the fact; our own fallback link at least searches for the right count.
     return (
         f"https://www.aviasales.com/search/{ORIGIN}"
-        f"{flight['departure_at'][8:10]}{flight['departure_at'][5:7]}{DESTINATION}1"
+        f"{flight['departure_at'][8:10]}{flight['departure_at'][5:7]}{DESTINATION}{PASSENGERS}"
     )
 
 
 def format_alert(flight: dict) -> str:
     price = flight["price"]
-    diff = PRICE_THRESHOLD_PER_PERSON - price
+    total = price * PASSENGERS
+    diff = PRICE_THRESHOLD_TOTAL - total
     departure = flight["departure_at"][:10]
-    return_date = flight["return_at"][:10]
+    return_date_str = flight["return_at"][:10]
+    return_date = dt.date.fromisoformat(return_date_str)
     link = build_booking_link(flight)
     lines = [
         "✈️ Найден авиабилет Алматы → Нячанг дешевле лимита",
-        f"📅 Вылет {departure} → обратно {return_date}",
-        f"💵 За человека: {price:,.0f} {CURRENCY} (дешевле лимита на {diff:,.0f} {CURRENCY})",
-        f"💵 На {PASSENGERS} взрослых: ~{price * PASSENGERS:,.0f} {CURRENCY}",
+        f"📅 Вылет {departure} → обратно {return_date_str}",
+        f"💵 За человека: {price:,.0f} {CURRENCY}",
+        f"💵 На {PASSENGERS} человек: {total:,.0f} {CURRENCY} (дешевле лимита на {diff:,.0f} {CURRENCY})",
         "⚠️ Цена может быть без учёта багажа — уточни на сайте перед покупкой",
         f"🔗 {link}",
     ]
+    if is_ideal_return_date(return_date):
+        lines.append("🎯 Идеальные даты — прилёт в Алматы в выходной")
+    lines.append(f"ℹ️ Ссылка уже настроена на поиск для {PASSENGERS} человек")
     return "\n\n".join(lines)
 
 
@@ -138,11 +148,13 @@ def gather_matching_flights(token: str) -> list:
 
 def format_digest_entry(rank: int, flight: dict) -> str:
     departure = flight["departure_at"][:10]
-    return_date = flight["return_at"][:10]
+    return_date_str = flight["return_at"][:10]
+    return_date = dt.date.fromisoformat(return_date_str)
     price = flight["price"]
+    ideal = " 🎯" if is_ideal_return_date(return_date) else ""
     return (
-        f"{rank}. 📅 {departure} → {return_date}\n"
-        f"💵 {price:,.0f} {CURRENCY}/чел | На {PASSENGERS} взрослых: ~{price * PASSENGERS:,.0f} {CURRENCY}\n"
+        f"{rank}. 📅 {departure} → {return_date_str}{ideal}\n"
+        f"💵 {price:,.0f} {CURRENCY}/чел | На {PASSENGERS}: {price * PASSENGERS:,.0f} {CURRENCY}\n"
         f"🔗 {build_booking_link(flight)}"
     )
 
@@ -158,7 +170,7 @@ def list_top_flights(n: int = 5) -> str:
 
     top = sorted(matching, key=lambda f: f["price"])[:n]
     entries = [format_digest_entry(i, f) for i, f in enumerate(top, start=1)]
-    header = f"✈️ Авиабилеты Aviasales — топ {len(top)} (1-15 августа, 6-7 дней)"
+    header = f"✈️ Авиабилеты Aviasales — топ {len(top)} (1-15 августа, 5-6 дней, 🎯 = выходной прилёт)"
     return header + "\n\n" + "\n\n".join(entries)
 
 
@@ -176,12 +188,16 @@ def main() -> int:
             return 0
 
         best = min(matching, key=lambda f: f["price"])
-        print(f"[check_flights] cheapest found: {best['price']} {CURRENCY} on {best['departure_at']} / {best['return_at']}")
+        total = best["price"] * PASSENGERS
+        print(
+            f"[check_flights] cheapest found: {best['price']} {CURRENCY}/person "
+            f"({total:,.0f} for {PASSENGERS}) on {best['departure_at']} / {best['return_at']}"
+        )
 
-        if best["price"] <= PRICE_THRESHOLD_PER_PERSON:
+        if total <= PRICE_THRESHOLD_TOTAL:
             send_message(format_alert(best))
         else:
-            print(f"[check_flights] cheapest price {best['price']} {CURRENCY} is above threshold {PRICE_THRESHOLD_PER_PERSON}, no alert")
+            print(f"[check_flights] cheapest total {total:,.0f} {CURRENCY} is above threshold {PRICE_THRESHOLD_TOTAL}, no alert")
 
         return 0
 

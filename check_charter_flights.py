@@ -18,8 +18,8 @@ SEARCH_URL_TEMPLATE = (
 )
 
 DEPARTURE_WINDOW_START = dt.date(2026, 8, 1)
-DEPARTURE_WINDOW_END = dt.date(2026, 8, 15)
-TRIP_DURATIONS = (5, 6)
+DEPARTURE_WINDOW_END = dt.date(2026, 8, 20)
+TRIP_DURATIONS = (5, 6, 8, 9)  # 5-6 = short trip, 8-9 = weekend-bridge trip (bracket a workweek with weekends)
 
 PRICE_THRESHOLD_PER_PERSON = 330_000  # reference only - the actual gate is the rounded total below
 PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 330k = 990k
@@ -31,6 +31,15 @@ POLL_INTERVAL_SECONDS = 2
 def is_ideal_return_date(return_date: dt.date) -> bool:
     """Weekend arrival back in Almaty (Saturday/Sunday) - a nice-to-have, not a filter."""
     return return_date.weekday() >= 5
+
+
+def is_weekend_bridge(departure: dt.date, return_date: dt.date) -> bool:
+    """Both ends fall Fri/Sat/Sun - lets a Mon-Fri vacation week be bracketed by two free weekends."""
+    return departure.weekday() >= 4 and return_date.weekday() >= 4
+
+
+def is_direct_itinerary(itinerary: dict) -> bool:
+    return all(leg.get("numberOfStopovers", 1) == 0 for leg in itinerary["legs"])
 
 
 def search_one_date(page, day: dt.date, duration: int) -> list:
@@ -97,6 +106,8 @@ def format_alert(deal: dict) -> str:
     ]
     if is_ideal_return_date(return_date):
         lines.append("🎯 Идеальные даты — прилёт в Алматы в выходной")
+    if is_weekend_bridge(dt.date.fromisoformat(deal["depart"]), return_date):
+        lines.append("🌉 Мостик через выходные — вылет и прилёт в пятницу-воскресенье")
     lines.append(
         f"🔗 https://ht.kz/new/search/avia?departure=ALA&destination=CXR&dateFrom={deal['depart']}"
         f"&dateTo={deal['return']}&adults={PASSENGERS}&children=0&childAges=&flyType=&from=aviaForm"
@@ -115,8 +126,8 @@ def gather_all_deals() -> list:
         while day <= DEPARTURE_WINDOW_END:
             for duration in TRIP_DURATIONS:
                 return_day = day + dt.timedelta(days=duration)
-                itineraries = search_one_date(page, day, duration)
-                print(f"[check_charter_flights] {day} (+{duration}d): {len(itineraries)} itineraries found")
+                itineraries = [it for it in search_one_date(page, day, duration) if is_direct_itinerary(it)]
+                print(f"[check_charter_flights] {day} (+{duration}d): {len(itineraries)} direct itineraries found")
                 for it in itineraries:
                     all_deals.append(format_itinerary(day, return_day, it))
             day += dt.timedelta(days=1)
@@ -128,10 +139,16 @@ def gather_all_deals() -> list:
 
 def format_digest_entry(rank: int, deal: dict) -> str:
     baggage = f"{deal['baggage_kg']} кг" if deal["baggage_kg"] else "не указан"
-    ideal = " 🎯" if is_ideal_return_date(dt.date.fromisoformat(deal["return"])) else ""
+    depart_date = dt.date.fromisoformat(deal["depart"])
+    return_date = dt.date.fromisoformat(deal["return"])
+    tags = ""
+    if is_ideal_return_date(return_date):
+        tags += " 🎯"
+    if is_weekend_bridge(depart_date, return_date):
+        tags += " 🌉"
     return (
         f"{rank}. 🛫 {deal['airline']}\n"
-        f"📅 {deal['depart']} → {deal['return']}{ideal}\n"
+        f"📅 {deal['depart']} → {deal['return']}{tags}\n"
         f"💵 {deal['price_per_person']:,.0f} тг/чел | На {PASSENGERS}: {deal['total_price']:,.0f} тг | 🧳 {baggage}"
     )
 
@@ -143,7 +160,10 @@ def list_top_charter(n: int = 5) -> str:
 
     top = sorted(all_deals, key=lambda d: d["price_per_person"])[:n]
     entries = [format_digest_entry(i, d) for i, d in enumerate(top, start=1)]
-    header = f"✈️ Чартерные билеты HT.KZ — топ {len(top)} (5-6 дней, 1-15 августа, 🎯 = выходной прилёт)"
+    header = (
+        f"✈️ Чартерные билеты HT.KZ — топ {len(top)} (1-20 августа, 5-6/8-9 дней, прямые, "
+        "🎯 = выходной прилёт, 🌉 = мостик через выходные)"
+    )
     return header + "\n\n" + "\n\n".join(entries)
 
 

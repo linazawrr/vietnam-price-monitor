@@ -23,8 +23,8 @@ REQUEST_TIMEOUT = 15
 
 YEAR = 2026
 DEPARTURE_WINDOW_START = dt.date(YEAR, 8, 1)
-DEPARTURE_WINDOW_END = dt.date(YEAR, 8, 15)
-TRIP_DURATIONS = (5, 6)
+DEPARTURE_WINDOW_END = dt.date(YEAR, 8, 20)
+TRIP_DURATIONS = (5, 6, 8, 9)  # 5-6 = short trip, 8-9 = weekend-bridge trip (bracket a workweek with weekends)
 PASSENGERS = 3
 PRICE_THRESHOLD_PER_PERSON = 330_000  # reference only - the actual gate is the rounded total below
 PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 330k = 990k
@@ -33,6 +33,11 @@ PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 
 def is_ideal_return_date(return_date: dt.date) -> bool:
     """Weekend arrival back in Almaty (Saturday/Sunday) - a nice-to-have, not a filter."""
     return return_date.weekday() >= 5
+
+
+def is_weekend_bridge(departure: dt.date, return_date: dt.date) -> bool:
+    """Both ends fall Fri/Sat/Sun - lets a Mon-Fri vacation week be bracketed by two free weekends."""
+    return departure.weekday() >= 4 and return_date.weekday() >= 4
 
 DESTINATION_NAMES = ("Нячанг", "Камрань")
 DEST_ALT = "|".join(DESTINATION_NAMES)
@@ -192,10 +197,14 @@ def find_best_roundtrip(posts: list[tuple[str, str]]):
 
 def format_digest_entry(rank: int, deal: dict) -> str:
     tag = "туда-обратно" if deal["source"] == "combined" else "комбинация из 2 билетов"
-    ideal = " 🎯" if is_ideal_return_date(deal["return"]) else ""
+    tags = ""
+    if is_ideal_return_date(deal["return"]):
+        tags += " 🎯"
+    if is_weekend_bridge(deal["depart"], deal["return"]):
+        tags += " 🌉"
     total = deal["price_per_person"] * PASSENGERS
     return (
-        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()} ({tag}){ideal}\n"
+        f"{rank}. 📅 {deal['depart'].isoformat()} → {deal['return'].isoformat()} ({tag}){tags}\n"
         f"💵 {deal['price_per_person']:,.0f} тг/чел | На {PASSENGERS}: {total:,.0f} тг\n"
         f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}"
     )
@@ -209,7 +218,10 @@ def list_top_telegram(n: int = 5) -> str:
 
     top = sorted(candidates, key=lambda c: c["price_per_person"])[:n]
     entries = [format_digest_entry(i, c) for i, c in enumerate(top, start=1)]
-    header = f"📢 Канал HT.KZ — топ {len(top)} комбинаций билетов (1-15 августа, 5-6 дней, 🎯 = выходной прилёт)"
+    header = (
+        f"📢 Канал HT.KZ — топ {len(top)} комбинаций билетов (1-20 августа, 5-6/8-9 дней, "
+        "🎯 = выходной прилёт, 🌉 = мостик через выходные)"
+    )
     return header + "\n\n" + "\n\n".join(entries)
 
 
@@ -229,6 +241,8 @@ def format_alert(deal: dict) -> str:
         lines.append("ℹ️ Это комбинация двух билетов в одну сторону из одного поста, не единый билет туда-обратно — уточни стыковку у менеджера")
     if is_ideal_return_date(deal["return"]):
         lines.append("🎯 Идеальные даты — прилёт в Алматы в выходной")
+    if is_weekend_bridge(deal["depart"], deal["return"]):
+        lines.append("🌉 Мостик через выходные — вылет и прилёт в пятницу-воскресенье")
     lines.append(f"🔗 https://t.me/{CHANNEL}/{deal['post_id']}")
     return "\n\n".join(lines)
 

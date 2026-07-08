@@ -12,8 +12,8 @@ ORIGIN = "ALA"
 DESTINATION = "CXR"  # Cam Ranh airport, serves Nha Trang
 CURRENCY = "KZT"
 DEPARTURE_WINDOW_START = dt.date(2026, 8, 1)
-DEPARTURE_WINDOW_END = dt.date(2026, 8, 15)
-TRIP_DURATIONS = (5, 6)
+DEPARTURE_WINDOW_END = dt.date(2026, 8, 20)
+TRIP_DURATIONS = (5, 6, 8, 9)  # 5-6 = short trip, 8-9 = weekend-bridge trip (bracket a workweek with weekends)
 PASSENGERS = 3
 PRICE_THRESHOLD_PER_PERSON = 330_000  # reference only - the actual gate is the rounded total below
 PRICE_THRESHOLD_TOTAL = 1_000_000  # for PASSENGERS people, rounded up from 3 x 330k = 990k
@@ -25,6 +25,11 @@ SEARCH_MONTH = "2026-08"
 def is_ideal_return_date(return_date: dt.date) -> bool:
     """Weekend arrival back in Almaty (Saturday/Sunday) - a nice-to-have, not a filter."""
     return return_date.weekday() >= 5
+
+
+def is_weekend_bridge(departure: dt.date, return_date: dt.date) -> bool:
+    """Both ends fall Fri/Sat/Sun - lets a Mon-Fri vacation week be bracketed by two free weekends."""
+    return departure.weekday() >= 4 and return_date.weekday() >= 4
 
 
 def _call_api(token: str, params: dict) -> dict:
@@ -44,7 +49,7 @@ def fetch_month_matrix(token: str) -> list:
         "departure_at": SEARCH_MONTH,
         "return_at": SEARCH_MONTH,
         "one_way": "false",
-        "direct": "false",
+        "direct": "true",
         "sorting": "price",
         "limit": 1000,
         "page": 1,
@@ -72,7 +77,7 @@ def fetch_exact_date_pairs(token: str) -> list:
                 "departure_at": day.isoformat(),
                 "return_at": return_day.isoformat(),
                 "one_way": "false",
-                "direct": "false",
+                "direct": "true",
                 "sorting": "price",
                 "limit": 1,
                 "page": 1,
@@ -100,7 +105,12 @@ def matches_window(flight: dict) -> bool:
     if not (DEPARTURE_WINDOW_START <= departure <= DEPARTURE_WINDOW_END):
         return False
     duration = (return_date - departure).days
-    return duration in TRIP_DURATIONS
+    if duration not in TRIP_DURATIONS:
+        return False
+    # belt-and-suspenders on top of the direct=true query param
+    if flight.get("transfers", 0) or flight.get("return_transfers", 0):
+        return False
+    return True
 
 
 def build_booking_link(flight: dict) -> str:
@@ -130,6 +140,8 @@ def format_alert(flight: dict) -> str:
     ]
     if is_ideal_return_date(return_date):
         lines.append("🎯 Идеальные даты — прилёт в Алматы в выходной")
+    if is_weekend_bridge(dt.date.fromisoformat(departure), return_date):
+        lines.append("🌉 Мостик через выходные — вылет и прилёт в пятницу-воскресенье")
     lines.append(f"ℹ️ Ссылка уже настроена на поиск для {PASSENGERS} человек")
     return "\n\n".join(lines)
 
@@ -147,13 +159,18 @@ def gather_matching_flights(token: str) -> list:
 
 
 def format_digest_entry(rank: int, flight: dict) -> str:
-    departure = flight["departure_at"][:10]
+    departure_str = flight["departure_at"][:10]
     return_date_str = flight["return_at"][:10]
+    departure = dt.date.fromisoformat(departure_str)
     return_date = dt.date.fromisoformat(return_date_str)
     price = flight["price"]
-    ideal = " 🎯" if is_ideal_return_date(return_date) else ""
+    tags = ""
+    if is_ideal_return_date(return_date):
+        tags += " 🎯"
+    if is_weekend_bridge(departure, return_date):
+        tags += " 🌉"
     return (
-        f"{rank}. 📅 {departure} → {return_date_str}{ideal}\n"
+        f"{rank}. 📅 {departure_str} → {return_date_str}{tags}\n"
         f"💵 {price:,.0f} {CURRENCY}/чел | На {PASSENGERS}: {price * PASSENGERS:,.0f} {CURRENCY}\n"
         f"🔗 {build_booking_link(flight)}"
     )
@@ -170,7 +187,10 @@ def list_top_flights(n: int = 5) -> str:
 
     top = sorted(matching, key=lambda f: f["price"])[:n]
     entries = [format_digest_entry(i, f) for i, f in enumerate(top, start=1)]
-    header = f"✈️ Авиабилеты Aviasales — топ {len(top)} (1-15 августа, 5-6 дней, 🎯 = выходной прилёт)"
+    header = (
+        f"✈️ Авиабилеты Aviasales — топ {len(top)} (1-20 августа, 5-6/8-9 дней, прямые, "
+        "🎯 = выходной прилёт, 🌉 = мостик через выходные)"
+    )
     return header + "\n\n" + "\n\n".join(entries)
 
 
